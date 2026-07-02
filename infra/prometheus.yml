@@ -1,0 +1,32 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "ocr-pipeline-orchestrator"
+    static_configs:
+      - targets: ["host.docker.internal:9090"]
+
+  - job_name: "qdrant"
+    static_configs:
+      - targets: ["qdrant:6333"]
+    metrics_path: /metrics
+
+  - job_name: "neo4j"
+    static_configs:
+      - targets: ["neo4j:2004"]
+
+  # JarvisLabs services (added dynamically when instance is up)
+  - job_name: "jarvis-ocr"
+    static_configs:
+      - targets: ["JARVIS_IP:8001"]
+    metrics_path: /metrics
+
+  - job_name: "jarvis-embed"
+    static_configs:
+      - targets: ["JARVIS_IP:8002"]
+    metrics_path: /metrics
+
+  - job_name: "jarvis-graph"
+    static_configs:
+      - targets: ["JARVIS_IP:8003"]
+    metrics_path: /metrics

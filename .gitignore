@@ -1,0 +1,50 @@
+# ── Model weights (too large for git — rsync to JarvisLabs) ──────────────────
+models/
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+.env
+*.pem
+*.key
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Large binaries / downloads ────────────────────────────────────────────────
+*.zip
+*.exe
+*.bin
+*.safetensors
+*.gguf
+
+# ── Logs & tmp ────────────────────────────────────────────────────────────────
+*.log
+/tmp/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+
+# ── Neo4j credential dump ─────────────────────────────────────────────────────
+Neo4j-*.txt
+
+# ── Tool state dirs (not source code) ────────────────────────────────────────
+.claude/
+.rtk/
