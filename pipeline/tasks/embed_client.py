@@ -47,18 +47,20 @@ async def ensure_collection() -> None:
 
 
 @stamina.retry(on=(httpx.HTTPError, httpx.TimeoutException), attempts=3, wait_max=30.0)
-async def _embed_batch(texts: list[str]) -> list[dict]:
+async def _embed_batch(texts: list[str], embed_url: str | None = None) -> list[dict]:
     """Call BGE-M3 embedding service. Returns list of {"dense": [...], "sparse": {"indices": [], "values": []}}."""
+    if embed_url is None:
+        embed_url = settings.jarvis_embed_url
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
-            f"{settings.jarvis_embed_url}/embed",
+            f"{embed_url}/embed",
             json={"texts": texts},
         )
         resp.raise_for_status()
         return resp.json()["embeddings"]
 
 
-async def embed_and_upsert(chunks: list[dict]) -> int:
+async def embed_and_upsert(chunks: list[dict], embed_url: str | None = None) -> int:
     """
     Embed a list of chunks and upsert to Qdrant.
     Returns number of points upserted.
@@ -72,7 +74,7 @@ async def embed_and_upsert(chunks: list[dict]) -> int:
         texts = [c["text"] for c in batch]
 
         t0 = time.monotonic()
-        embeddings = await _embed_batch(texts)
+        embeddings = await _embed_batch(texts, embed_url)
         elapsed_ms = (time.monotonic() - t0) * 1000
         metrics.embed_batch_duration.observe(elapsed_ms)
 

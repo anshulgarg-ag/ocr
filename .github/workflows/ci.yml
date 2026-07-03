@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, develop]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - run: pip install ruff mypy bandit[toml]
+      - run: ruff check pipeline/ config/ query_api/ tests/
+      - run: ruff format --check pipeline/ config/ query_api/ tests/
+      - run: bandit -r pipeline/ -ll --skip B101
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: |
+          pytest tests/unit/ \
+            -v \
+            --cov=pipeline \
+            --cov=config \
+            --cov-report=xml
+      - uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+        continue-on-error: true
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ocr_pipeline
+          POSTGRES_USER: ocr
+          POSTGRES_PASSWORD: ocr
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 10s
+        ports:
+          - 9000:9000
+        args: server /data
+      qdrant:
+        image: qdrant/qdrant:latest
+        options: >-
+          --health-cmd "curl -f http://localhost:6333/health"
+          --health-interval 10s
+        ports:
+          - 6333:6333
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: |
+          pytest tests/integration/ \
+            -v \
+            --timeout=30 \
+            --cov=pipeline \
+            --cov-report=xml
+        env:
+          POSTGRES_URL: postgresql+asyncpg://ocr:ocr@localhost:5432/ocr_pipeline
+          POSTGRES_SYNC_URL: postgresql://ocr:ocr@localhost:5432/ocr_pipeline
+          MINIO_ENDPOINT: http://localhost:9000
+          QDRANT_URL: http://localhost:6333
+
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v2
+      - run: docker build -f infra/docker/Dockerfile.embed . -t ocr-embed:ci
+      - run: docker build -f infra/docker/Dockerfile.pipeline . -t ocr-pipeline:ci

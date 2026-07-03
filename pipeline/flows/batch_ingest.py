@@ -27,10 +27,13 @@ from config.settings import settings
 from observability.alerts import alert_flow_failed, alert_dead_letter_spike
 from observability.metrics import docs_processed, start_metrics_server
 from observability.tracing import init_tracing, get_tracer
-from pipeline.tasks import storage_ops, discovery, state, jarvis_ops, ocr_client, chunker, embed_client, neo4j_writer
+from pipeline.tasks import storage_ops, discovery, state, ocr_client, chunker, embed_client, neo4j_writer
+from pipeline.providers.factory import create_gpu_provider
 
 configure_logging()
 log = get_logger(__name__)
+
+_provider = None
 
 
 @task(retries=2, retry_delay_seconds=30)
@@ -47,13 +50,22 @@ async def task_discover(batch_id: str) -> list[dict]:
 
 
 @task(retries=1, retry_delay_seconds=60)
-async def task_start_jarvis() -> None:
-    await jarvis_ops.start_instance()  # opens tunnel + waits for services
+async def task_start_gpu() -> dict:
+    global _provider
+    _provider = create_gpu_provider()
+    endpoints = await _provider.start()
+    await _provider.wait_for_services(timeout=300)
+    return {
+        "ocr_url": endpoints.ocr_url,
+        "embed_url": endpoints.embed_url,
+        "graph_url": endpoints.graph_url,
+        "storage_url": endpoints.storage_url,
+    }
 
 
 @task
-async def task_ocr(docs: list[dict], batch_id: str) -> list[dict]:
-    results = await ocr_client.ocr_batch(docs, batch_id)
+async def task_ocr(docs: list[dict], batch_id: str, endpoints: dict) -> list[dict]:
+    results = await ocr_client.ocr_batch(docs, batch_id, endpoints["ocr_url"])
     async with state.AsyncSessionLocal() as session:
         for r in results:
             if r["success"]:
@@ -92,12 +104,12 @@ async def task_chunk(ocr_results: list[dict]) -> list[dict]:
 
 
 @task(retries=2, retry_delay_seconds=15)
-async def task_embed(chunked_results: list[dict]) -> None:
+async def task_embed(chunked_results: list[dict], endpoints: dict) -> None:
     await embed_client.ensure_collection()
     async with state.AsyncSessionLocal() as session:
         for r in chunked_results:
             try:
-                count = await embed_client.embed_and_upsert(r["chunks"])
+                count = await embed_client.embed_and_upsert(r["chunks"], endpoints["embed_url"])
                 log.info("embedded", doc_id=r["file_hash"], vectors=count)
                 await state.advance(session, r["file_hash"], state.DocStatus.EMBEDDED)
             except Exception as exc:
@@ -106,7 +118,7 @@ async def task_embed(chunked_results: list[dict]) -> None:
 
 
 @task(retries=1, retry_delay_seconds=30)
-async def task_graph(chunked_results: list[dict], original_docs: list[dict]) -> None:
+async def task_graph(chunked_results: list[dict], original_docs: list[dict], endpoints: dict) -> None:
     """Pause 1 OCR worker, run entity extraction, write full KG to Neo4j."""
     await neo4j_writer.setup_constraints()
 
@@ -114,7 +126,7 @@ async def task_graph(chunked_results: list[dict], original_docs: list[dict]) -> 
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(f"{settings.jarvis_ocr_url}/pause_worker")
+            await client.post(f"{endpoints['ocr_url']}/pause_worker")
     except Exception:
         pass  # Not fatal if OCR is already idle
 
@@ -137,7 +149,7 @@ async def task_graph(chunked_results: list[dict], original_docs: list[dict]) -> 
                 import httpx as _httpx
                 async with _httpx.AsyncClient(timeout=300) as client:
                     resp = await client.post(
-                        f"{settings.jarvis_graph_url}/extract",
+                        f"{endpoints['graph_url']}/extract",
                         json={"text": md_text, "doc_id": r["file_hash"]},
                     )
                     resp.raise_for_status()
@@ -158,28 +170,29 @@ async def task_graph(chunked_results: list[dict], original_docs: list[dict]) -> 
 async def batch_ingest_flow() -> dict:
     batch_id = str(uuid.uuid4())[:8]
     start_time = time.monotonic()
-    logger = get_run_logger()
-    logger.info(f"Batch {batch_id} starting")
 
-    # Ensure storage bucket exists
-    storage_ops.ensure_bucket()
-
-    # Stage 1: Discover
-    new_files = await task_discover(batch_id)
-    if not new_files:
-        logger.info("No new files found. Batch done.")
-        return {"batch_id": batch_id, "new_files": 0}
-
-    logger.info(f"Found {len(new_files)} new documents")
-
-    # Stage 2: Start JarvisLabs (always stopped in finally)
-    watchdog_task = None
+    # Everything below is wrapped in try/finally so GPU provider cleanup runs
+    # even if logger setup, discovery, or any later stage fails.
     try:
-        await task_start_jarvis()
-        watchdog_task = asyncio.create_task(jarvis_ops.watchdog(start_time))
+        logger = get_run_logger()
+        logger.info(f"Batch {batch_id} starting")
+
+        # Ensure storage bucket exists
+        storage_ops.ensure_bucket()
+
+        # Stage 1: Discover
+        new_files = await task_discover(batch_id)
+        if not new_files:
+            logger.info("No new files found. Batch done.")
+            return {"batch_id": batch_id, "new_files": 0}
+
+        logger.info(f"Found {len(new_files)} new documents")
+
+        # Stage 2: Start GPU provider (always stopped in finally)
+        endpoints = await task_start_gpu()
 
         # Stage 3: OCR
-        ocr_results = await task_ocr(new_files, batch_id)
+        ocr_results = await task_ocr(new_files, batch_id, endpoints)
         logger.info(f"OCR complete: {len(ocr_results)}/{len(new_files)} succeeded")
 
         if not ocr_results:
@@ -189,10 +202,10 @@ async def batch_ingest_flow() -> dict:
         chunked = await task_chunk(ocr_results)
 
         # Stage 5: Embed → Qdrant
-        await task_embed(chunked)
+        await task_embed(chunked, endpoints)
 
         # Stage 6: Graph → Neo4j (full knowledge graph)
-        await task_graph(chunked, new_files)
+        await task_graph(chunked, new_files, endpoints)
 
         # Finalize
         async with state.AsyncSessionLocal() as session:
@@ -219,12 +232,13 @@ async def batch_ingest_flow() -> dict:
         await alert_flow_failed(batch_id, str(exc))
         raise
     finally:
-        if watchdog_task:
-            watchdog_task.cancel()
-        try:
-            await jarvis_ops.stop_instance()
-        except Exception as stop_exc:
-            log.error("jarvis_stop_failed_in_finally", error=str(stop_exc))
+        global _provider
+        if _provider:
+            try:
+                await _provider.stop()
+            except Exception as stop_exc:
+                log.error("gpu_provider_stop_failed_in_finally", error=str(stop_exc))
+                _provider = None
 
 
 if __name__ == "__main__":

@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "neo4jpassword"
 
+    # GPU Provider
+    gpu_provider_type: str = "self_hosted"
+    gpu_ocr_url: str = "http://localhost:8001"
+    gpu_embed_url: str = "http://localhost:8002"
+    gpu_graph_url: str = "http://localhost:8003"
+
     # JarvisLabs
     jarvis_api_key: str = ""
     jarvis_instance_id: str = ""

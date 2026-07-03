@@ -1,0 +1,35 @@
+name: SonarQube
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  sonar:
+    name: SonarQube Quality Gate
+    runs-on: ubuntu-latest
+    if: ${{ secrets.SONAR_HOST_URL != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: |
+          pytest tests/unit/ \
+            --cov=pipeline --cov=config --cov=query_api \
+            --cov-report=xml
+      - run: bandit -r pipeline/ -f json -o bandit-report.json || true
+      - uses: SonarSource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      - uses: SonarSource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}

@@ -17,13 +17,15 @@ log = get_logger(__name__)
 
 
 @stamina.retry(on=(httpx.HTTPError, httpx.TimeoutException), attempts=settings.max_retries, wait_max=30.0)
-async def ocr_document(s3_key_raw: str, s3_key_md: str, doc_id: str) -> dict:
+async def ocr_document(s3_key_raw: str, s3_key_md: str, doc_id: str, ocr_url: str | None = None) -> dict:
     """
     Ask the Chandra OCR service to process one document.
     JarvisLabs reads from storage directly, writes Markdown back, returns metadata.
     Returns: {"page_count": int, "duration_ms": float, "s3_key_md": str}
     """
-    url = f"{settings.jarvis_ocr_url}/ocr"
+    if ocr_url is None:
+        ocr_url = settings.jarvis_ocr_url
+    url = f"{ocr_url}/ocr"
     payload = {
         "input_path": s3_key_raw,
         "output_path": s3_key_md,
@@ -43,7 +45,7 @@ async def ocr_document(s3_key_raw: str, s3_key_md: str, doc_id: str) -> dict:
     return result
 
 
-async def ocr_batch(docs: list[dict], batch_id: str) -> list[dict]:
+async def ocr_batch(docs: list[dict], batch_id: str, ocr_url: str | None = None) -> list[dict]:
     """
     Process multiple documents concurrently, bounded by OCR_WORKERS semaphore.
     Each doc: {"file_hash": str, "s3_key_raw": str, "filename": str}
@@ -60,7 +62,7 @@ async def ocr_batch(docs: list[dict], batch_id: str) -> list[dict]:
             start = asyncio.get_event_loop().time()
             metrics.docs_in_flight.inc()
             try:
-                result = await ocr_document(doc["s3_key_raw"], s3_key_md, file_hash)
+                result = await ocr_document(doc["s3_key_raw"], s3_key_md, file_hash, ocr_url)
                 duration = (asyncio.get_event_loop().time() - start) * 1000
                 metrics.ocr_duration.observe(duration / 1000)
                 return {

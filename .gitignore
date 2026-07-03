@@ -32,6 +32,11 @@ build/
 *.log
 /tmp/
 
+# ── Test coverage artifacts ───────────────────────────────────────────────────
+.coverage
+coverage.xml
+htmlcov/
+
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
@@ -48,3 +53,11 @@ Neo4j-*.txt
 # ── Tool state dirs (not source code) ────────────────────────────────────────
 .claude/
 .rtk/
+.headroom/
+
+# ── Token optimization tools ──────────────────────────────────────────────────
+rtk.exe
+rtk
+rtk-*.zip
+headroom_compress.py
+test_headroom_import.py
